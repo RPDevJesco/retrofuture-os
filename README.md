@@ -1,4 +1,4 @@
-# Corona OS
+# RetroFuture OS
 
 A retro-future operating system designed for vintage x86 hardware (Pentium III era).
 
@@ -71,8 +71,8 @@ make debug
 
 ### Output Files
 
-- `build/corona.img` - 1.44MB bootable floppy image
-- `build/corona.iso` - Bootable CD-ROM image
+- `build/RetroFuture.img` - 1.44MB bootable floppy image
+- `build/RetroFuture.iso` - Bootable CD-ROM image
 
 ## Writing to Physical Media
 
@@ -80,10 +80,10 @@ make debug
 
 ```bash
 # Linux
-sudo dd if=build/corona.img of=/dev/fd0 bs=512
+sudo dd if=build/RetroFuture.img of=/dev/fd0 bs=512
 
 # Windows (use Powershell)
-$img = [System.IO.File]::ReadAllBytes("C:\path\retrofuture-os\output\corona-text.img")
+$img = [System.IO.File]::ReadAllBytes("C:\path\retrofuture-os\output\RetroFuture-text.img")
 $floppy = [System.IO.File]::Open("\\.\A:", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write)
 $floppy.Write($img, 0, $img.Length)
 $floppy.Close()
@@ -91,7 +91,7 @@ $floppy.Close()
 
 ### CD-ROM
 
-Burn `build/corona.iso` using any CD burning software.
+Burn `build/RetroFuture.iso` using any CD burning software.
 
 ## Shell Commands
 
