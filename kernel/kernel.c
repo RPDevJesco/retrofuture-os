@@ -1093,17 +1093,6 @@ static void kcmd_format(shell_state_t *sh, int argc, char **argv) {
                       total_sectors / 2048);
     }
 
-    /* Get format parameters */
-    fat12_format_params_t params;
-    fat12_calc_params(&params, total_sectors);
-
-    /* Set volume label */
-    if (label && *label) {
-        fat12_copy_padded(params.volume_label, label, 11);
-    } else {
-        fat12_copy_padded(params.volume_label, "RETROFUTURE", 11);
-    }
-
     /* Get underlying ATA drive for direct writes */
     ata_drive_t *drive = (ata_drive_t *)ctx->boot_device.driver_data;
     if (!drive) {
@@ -1115,16 +1104,35 @@ static void kcmd_format(shell_state_t *sh, int argc, char **argv) {
     /* Set global drive pointer for block callbacks */
     g_format_drive = drive;
 
-    /* Show calculated parameters */
-    uint32_t root_sectors = (params.root_entry_count * 32 + 511) / 512;
-    uint32_t total_writes = 1 + (params.num_fats * params.sectors_per_fat) +
-                            root_sectors + params.sectors_per_cluster;
+    /* Calculate format parameters MANUALLY to avoid buggy fat12_calc_params */
+    /* For 65536 sectors (32MB), we need sectors_per_cluster that gives < 4085 clusters */
+    uint8_t sectors_per_cluster = 1;
+    uint16_t reserved_sectors = 1;
+    uint8_t num_fats = 2;
+    uint16_t root_entry_count = 512;  /* 512 entries = 16KB = 32 sectors */
+    uint32_t root_sectors = (root_entry_count * 32 + 511) / 512;
+
+    /* Iteratively find correct cluster size */
+    while (sectors_per_cluster < 128) {
+        uint32_t fat_sectors_est = ((total_sectors / sectors_per_cluster) * 3 / 2 + 511) / 512;
+        uint32_t data_start = reserved_sectors + (num_fats * fat_sectors_est) + root_sectors;
+        uint32_t data_sectors = total_sectors - data_start;
+        uint32_t clusters = data_sectors / sectors_per_cluster;
+
+        if (clusters <= 4084) break;
+        sectors_per_cluster *= 2;
+    }
+
+    /* Recalculate with final cluster size */
+    uint32_t data_sectors_approx = total_sectors - reserved_sectors - root_sectors;
+    uint32_t clusters_approx = data_sectors_approx / sectors_per_cluster;
+    uint16_t sectors_per_fat = ((clusters_approx * 3 / 2) + 511) / 512;
+    if (sectors_per_fat < 1) sectors_per_fat = 1;
 
     sh->io->printf("\nFormat parameters:\n");
-    sh->io->printf("  Sectors/cluster: %u\n", params.sectors_per_cluster);
-    sh->io->printf("  FAT sectors: %u (x%u FATs)\n", params.sectors_per_fat, params.num_fats);
-    sh->io->printf("  Root dir sectors: %u\n", root_sectors);
-    sh->io->printf("  Total sectors to write: ~%u\n\n", total_writes);
+    sh->io->printf("  Sectors/cluster: %u\n", sectors_per_cluster);
+    sh->io->printf("  FAT sectors: %u (x%u FATs)\n", sectors_per_fat, num_fats);
+    sh->io->printf("  Root entries: %u (%u sectors)\n", root_entry_count, root_sectors);
 
     /* Manual format with progress output */
     uint8_t sector[512];
@@ -1132,7 +1140,7 @@ static void kcmd_format(shell_state_t *sh, int argc, char **argv) {
     uint32_t written = 0;
 
     /* ========== Write Boot Sector ========== */
-    sh->io->printf("Writing boot sector (LBA 0)...");
+    sh->io->printf("\nWriting boot sector (LBA 0)...");
 
     for (int j = 0; j < 512; j++) sector[j] = 0;
 
@@ -1140,29 +1148,45 @@ static void kcmd_format(shell_state_t *sh, int argc, char **argv) {
     sector[0] = 0xEB; sector[1] = 0x3C; sector[2] = 0x90;
 
     /* OEM Name */
-    fat12_copy_padded((char *)&sector[3], "RETROFUT", 8);
+    sector[3] = 'R'; sector[4] = 'E'; sector[5] = 'T'; sector[6] = 'R';
+    sector[7] = 'O'; sector[8] = 'F'; sector[9] = 'U'; sector[10] = 'T';
 
     /* BPB */
-    *(uint16_t *)&sector[11] = params.bytes_per_sector;
-    sector[13] = params.sectors_per_cluster;
-    *(uint16_t *)&sector[14] = params.reserved_sectors;
-    sector[16] = params.num_fats;
-    *(uint16_t *)&sector[17] = params.root_entry_count;
+    *(uint16_t *)&sector[11] = 512;  /* bytes per sector */
+    sector[13] = sectors_per_cluster;
+    *(uint16_t *)&sector[14] = reserved_sectors;
+    sector[16] = num_fats;
+    *(uint16_t *)&sector[17] = root_entry_count;
     *(uint16_t *)&sector[19] = (total_sectors < 65536) ? total_sectors : 0;
-    sector[21] = params.media_type;
-    *(uint16_t *)&sector[22] = params.sectors_per_fat;
-    *(uint16_t *)&sector[24] = params.sectors_per_track;
-    *(uint16_t *)&sector[26] = params.num_heads;
-    *(uint32_t *)&sector[28] = 0;
+    sector[21] = 0xF8;  /* media type: fixed disk */
+    *(uint16_t *)&sector[22] = sectors_per_fat;
+    *(uint16_t *)&sector[24] = 63;   /* sectors per track */
+    *(uint16_t *)&sector[26] = 16;   /* number of heads */
+    *(uint32_t *)&sector[28] = 0;    /* hidden sectors */
     *(uint32_t *)&sector[32] = (total_sectors >= 65536) ? total_sectors : 0;
 
     /* Extended boot record */
     sector[36] = 0x80;  /* Drive number */
     sector[37] = 0x00;
     sector[38] = 0x29;  /* Extended boot signature */
-    *(uint32_t *)&sector[39] = params.volume_id;
-    for (int j = 0; j < 11; j++) sector[43 + j] = params.volume_label[j];
-    fat12_copy_padded((char *)&sector[54], "FAT12", 8);
+    *(uint32_t *)&sector[39] = 0x12345678;  /* Volume ID */
+
+    /* Volume label */
+    const char *vol_label = (label && *label) ? label : "RETROFUTURE";
+    for (int j = 0; j < 11; j++) {
+        if (vol_label[j] && vol_label[j] != '\0') {
+            char c = vol_label[j];
+            if (c >= 'a' && c <= 'z') c -= 32;
+            sector[43 + j] = c;
+        } else {
+            sector[43 + j] = ' ';
+        }
+    }
+
+    /* FS Type */
+    sector[54] = 'F'; sector[55] = 'A'; sector[56] = 'T';
+    sector[57] = '1'; sector[58] = '2'; sector[59] = ' ';
+    sector[60] = ' '; sector[61] = ' ';
 
     /* Boot signature */
     sector[510] = 0x55;
@@ -1177,19 +1201,19 @@ static void kcmd_format(shell_state_t *sh, int argc, char **argv) {
     written++;
 
     /* ========== Write FAT Tables ========== */
-    uint32_t fat_start = params.reserved_sectors;
+    uint32_t fat_start = reserved_sectors;
 
-    for (uint8_t fat_num = 0; fat_num < params.num_fats && success; fat_num++) {
-        sh->io->printf("Writing FAT %u (%u sectors)...", fat_num + 1, params.sectors_per_fat);
+    for (uint8_t fat_num = 0; fat_num < num_fats && success; fat_num++) {
+        sh->io->printf("Writing FAT %u (%u sectors)...", fat_num + 1, sectors_per_fat);
 
-        uint32_t fat_sector = fat_start + (fat_num * params.sectors_per_fat);
+        uint32_t fat_sector = fat_start + (fat_num * sectors_per_fat);
 
-        for (uint16_t s = 0; s < params.sectors_per_fat; s++) {
+        for (uint16_t s = 0; s < sectors_per_fat; s++) {
             for (int j = 0; j < 512; j++) sector[j] = 0;
 
             /* First sector has reserved entries */
             if (s == 0) {
-                sector[0] = params.media_type;
+                sector[0] = 0xF8;  /* media type */
                 sector[1] = 0xFF;
                 sector[2] = 0xFF;
             }
@@ -1210,7 +1234,7 @@ static void kcmd_format(shell_state_t *sh, int argc, char **argv) {
 
     /* ========== Write Root Directory ========== */
     if (success) {
-        uint32_t root_start = fat_start + (params.num_fats * params.sectors_per_fat);
+        uint32_t root_start = fat_start + (num_fats * sectors_per_fat);
 
         sh->io->printf("Writing root directory (%u sectors)...", root_sectors);
 
@@ -1219,10 +1243,17 @@ static void kcmd_format(shell_state_t *sh, int argc, char **argv) {
 
             /* First sector contains volume label */
             if (s == 0) {
-                fat12_dirent_t *vol = (fat12_dirent_t *)sector;
-                for (int j = 0; j < 8; j++) vol->name[j] = params.volume_label[j];
-                for (int j = 0; j < 3; j++) vol->ext[j] = params.volume_label[8 + j];
-                vol->attributes = FAT12_ATTR_VOLUME_ID;
+                /* Volume label entry */
+                for (int j = 0; j < 11; j++) {
+                    if (vol_label[j] && vol_label[j] != '\0') {
+                        char c = vol_label[j];
+                        if (c >= 'a' && c <= 'z') c -= 32;
+                        sector[j] = c;
+                    } else {
+                        sector[j] = ' ';
+                    }
+                }
+                sector[11] = 0x08;  /* Volume label attribute */
             }
 
             if (ata_write_sectors(drive, root_start + s, 1, sector) != 1) {
