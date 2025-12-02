@@ -229,7 +229,9 @@ EVENT CHAINS (event_chain_*)
 Public Domain / MIT - Use freely for any purpose.
 
 ## Credits
-
 - Jesco      - Architecture and implementation
 - OSDev Wiki - Invaluable reference
 - Intel      - For the glorious Pentium III
+
+https://github.com/user-attachments/assets/1e393e59-ffd3-40c9-856d-fac87c6acf9b
+
