@@ -520,15 +520,45 @@ static void shell_io_printf(const char *fmt, ...) {
     __builtin_va_list args;
     __builtin_va_start(args, fmt);
 
-    /* Simple printf - just forward to kprintf via a buffer */
-    /* For simplicity, just use kprintf directly */
     while (*fmt) {
         if (*fmt == '%') {
             fmt++;
+
+            /* Parse flags */
+            bool left_align = false;
+            if (*fmt == '-') {
+                left_align = true;
+                fmt++;
+            }
+
+            /* Parse width */
+            int width = 0;
+            while (*fmt >= '0' && *fmt <= '9') {
+                width = width * 10 + (*fmt - '0');
+                fmt++;
+            }
+
+            /* Handle format specifier */
             switch (*fmt) {
                 case 's': {
                     const char *s = __builtin_va_arg(args, const char *);
-                    kputs(s ? s : "(null)");
+                    if (!s) s = "(null)";
+
+                    /* Calculate string length */
+                    int len = 0;
+                    const char *p = s;
+                    while (*p++) len++;
+
+                    /* Padding */
+                    int pad = (width > len) ? width - len : 0;
+
+                    if (!left_align) {
+                        while (pad-- > 0) kputchar(' ');
+                    }
+                    kputs(s);
+                    if (left_align) {
+                        while (pad-- > 0) kputchar(' ');
+                    }
                     break;
                 }
                 case 'd': case 'i': {
@@ -551,6 +581,7 @@ static void shell_io_printf(const char *fmt, ...) {
                     break;
                 default:
                     kputchar('%');
+                    if (left_align) kputchar('-');
                     kputchar(*fmt);
                     break;
             }

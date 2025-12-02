@@ -225,7 +225,6 @@ static void shell_init(shell_state_t *sh, shell_io_t *io, void *context) {
 
     /* Register built-in commands */
     shell_register(sh, "help",  "Show available commands", sh_cmd_help, 0);
-    shell_register(sh, "?",     "Show available commands", sh_cmd_help, 0);
     shell_register(sh, "exit",  "Exit the shell",          sh_cmd_exit, 0);
     shell_register(sh, "quit",  "Exit the shell",          sh_cmd_exit, 0);
     shell_register(sh, "pwd",   "Print working directory", sh_cmd_pwd,  0);
