@@ -1361,6 +1361,29 @@ static void setup_kernel_shell(kernel_context_t *ctx) {
 extern const uint8_t terminal_font_8x16[];
 
 void kernel_main(boot_info_t *bi) {
+    /* DEBUG: Immediate VGA output to prove we got here */
+    volatile uint16_t *vga = (volatile uint16_t *)0xB8000;
+    vga[0] = 0x4F4B;  /* 'K' in white on red - proves kernel entry */
+    vga[1] = 0x4F45;  /* 'E' */
+    vga[2] = 0x4F52;  /* 'R' */
+    vga[3] = 0x4F4E;  /* 'N' */
+    vga[4] = 0x4F45;  /* 'E' */
+    vga[5] = 0x4F4C;  /* 'L' */
+
+    /* DEBUG: Pause so we can see it */
+    for (volatile int i = 0; i < 50000000; i++);
+
+    /* Verify boot info */
+    if (bi->magic != BOOT_MAGIC) {
+        vga[80] = 0x4F42;  /* 'B' - Bad magic */
+        vga[81] = 0x4F41;  /* 'A' */
+        vga[82] = 0x4F44;  /* 'D' */
+        while (1) { __asm__ volatile ("hlt"); }
+    }
+
+    vga[80] = 0x2F4F;  /* 'O' in green - magic OK */
+    vga[81] = 0x2F4B;  /* 'K' */
+
     /* Verify boot info */
     if (bi->magic != BOOT_MAGIC) {
         /* Can't even verify boot info, just halt */
@@ -1433,15 +1456,6 @@ void kernel_main(boot_info_t *bi) {
     keyboard_set_event_callback(fire_key_event);
     kprintf("\r  [ OK ] PS/2 keyboard\n");
 
-    /* Initialize floppy controller */
-    kprintf("  [....] Floppy controller");
-    mount_cmd_init();
-    if (mount_floppy_available()) {
-        kprintf("\r  [ OK ] Floppy controller\n");
-    } else {
-        kprintf("\r  [WARN] Floppy controller (not found)\n");
-    }
-
     /* Initialize ATA */
     kprintf("  [....] ATA controller");
     ata_init();
@@ -1496,6 +1510,14 @@ void kernel_main(boot_info_t *bi) {
     kprintf("\n  Enabling interrupts...\n");
     interrupts_enable();
 
+    /* Initialize floppy controller */
+    kprintf("  [....] Floppy controller");
+    mount_cmd_init();
+    if (mount_floppy_available()) {
+        kprintf("\r  [ OK ] Floppy controller\n");
+    } else {
+        kprintf("\r  [WARN] Floppy controller (not found)\n");
+    }
     kprintf("  System ready.\n");
 
     /* Setup and run shell */

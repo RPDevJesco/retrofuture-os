@@ -25,6 +25,10 @@ STAGE2_OFFSET   equ 0x7E00      ; Right after boot sector
 STAGE2_SECTORS  equ 32          ; 16KB for stage 2
 BOOT_DRIVE      equ 0x0500      ; Store boot drive here
 
+; Floppy geometry (1.44MB)
+SECTORS_PER_TRACK equ 18
+HEADS           equ 2
+
 ; ============================================================================
 ; Entry Point
 ; ============================================================================
@@ -56,19 +60,65 @@ start:
     int     0x13
     jc      disk_error
 
-    ; Load stage 2
-    mov     ax, STAGE2_SEGMENT
-    mov     es, ax
-    mov     bx, STAGE2_OFFSET   ; ES:BX = destination
+    ; Load stage 2 one sector at a time (handles track boundaries)
+    mov     word [cur_lba], 1           ; Start at LBA 1 (sector after boot)
+    mov     word [sectors_rem], STAGE2_SECTORS
+    mov     word [dest_ptr], STAGE2_OFFSET  ; Store destination in memory
 
-    mov     ah, 0x02            ; BIOS read sectors
-    mov     al, STAGE2_SECTORS  ; Number of sectors
-    mov     ch, 0               ; Cylinder 0
-    mov     cl, 2               ; Sector 2 (1-indexed, sector 1 is boot)
-    mov     dh, 0               ; Head 0
-    mov     dl, [BOOT_DRIVE]    ; Drive
+.load_loop:
+    cmp     word [sectors_rem], 0
+    je      .load_done
+
+    ; Convert LBA to CHS using stack to preserve values
+    ; LBA = (C * HEADS + H) * SECTORS_PER_TRACK + (S - 1)
+    mov     ax, [cur_lba]
+    xor     dx, dx
+    mov     cx, SECTORS_PER_TRACK
+    div     cx                          ; AX = track*heads + head, DX = sector-1
+    push    dx                          ; Save sector-1
+    xor     dx, dx
+    mov     cx, HEADS
+    div     cx                          ; AX = cylinder, DX = head
+    mov     ch, al                      ; CH = cylinder
+    mov     dh, dl                      ; DH = head
+    pop     ax
+    inc     al
+    mov     cl, al                      ; CL = sector (1-based)
+
+    ; Set up for read
+    mov     bx, [dest_ptr]              ; ES:BX = destination
+    mov     si, 3                       ; Retry count
+
+.retry:
+    mov     ah, 0x02                    ; BIOS read sectors
+    mov     al, 1                       ; One sector at a time
+    mov     dl, [BOOT_DRIVE]
     int     0x13
-    jc      disk_error
+    jnc     .read_ok
+
+    ; Reset disk and retry
+    xor     ax, ax
+    mov     dl, [BOOT_DRIVE]
+    int     0x13
+    dec     si
+    jnz     .retry
+    jmp     disk_error
+
+.read_ok:
+    ; Progress dot
+    mov     ax, 0x0E2E                  ; Print '.'
+    int     0x10
+
+    ; Advance destination pointer
+    add     word [dest_ptr], 512
+    inc     word [cur_lba]
+    dec     word [sectors_rem]
+    jmp     .load_loop
+
+.load_done:
+    ; Newline after dots
+    mov     si, msg_newline
+    call    print_string
 
     ; Verify magic number at start of stage 2
     cmp     word [STAGE2_OFFSET], 0x5441  ; 'AT' magic
@@ -123,9 +173,15 @@ print_string:
 ; ============================================================================
 
 msg_loading:    db '[BOOT] Loading stage 2...', 13, 10, 0
+msg_newline:    db 13, 10, 0
 msg_disk_err:   db '[BOOT] Disk read error!', 13, 10, 0
 msg_stage2_err: db '[BOOT] Stage 2 corrupt!', 13, 10, 0
 msg_halt:       db '[BOOT] System halted.', 13, 10, 0
+
+; Variables
+cur_lba:        dw 0
+sectors_rem:    dw 0
+dest_ptr:       dw 0
 
 ; ============================================================================
 ; Boot Sector Padding and Signature

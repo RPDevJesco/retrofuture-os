@@ -188,128 +188,125 @@ query_e820:
     jne     .error
 
     ; Valid entry
-    add     di, 24              ; Next entry slot
+    add     di, 24
     inc     bp
     cmp     bp, E820_MAX
     jge     .done
 
-    test    ebx, ebx            ; EBX = 0 means done
+    test    ebx, ebx            ; EBX = 0 means end
     jnz     .loop
 
 .done:
     ; Store entry count
     mov     [E820_BASE], bp
-    clc
-    jmp     .exit
 
-.error:
-    stc
-
-.exit:
     pop     edx
     pop     ecx
     pop     ebx
     pop     di
     pop     es
+    clc                         ; Success
+    ret
+
+.error:
+    pop     edx
+    pop     ecx
+    pop     ebx
+    pop     di
+    pop     es
+    stc                         ; Failure
     ret
 
 ; ============================================================================
-; A20 Line Enable (multiple methods for compatibility)
+; A20 Line Enable
 ; ============================================================================
 
 enable_a20:
-    ; Method 1: BIOS
+    ; Try BIOS method first
     mov     ax, 0x2401
     int     0x15
     jnc     .done
 
-    ; Method 2: Keyboard controller
-    call    .wait_input
+    ; Try keyboard controller method
+    call    .wait_kbd
     mov     al, 0xAD            ; Disable keyboard
     out     0x64, al
 
-    call    .wait_input
+    call    .wait_kbd
     mov     al, 0xD0            ; Read output port
     out     0x64, al
 
-    call    .wait_output
+    call    .wait_kbd_data
     in      al, 0x60
     push    ax
 
-    call    .wait_input
+    call    .wait_kbd
     mov     al, 0xD1            ; Write output port
     out     0x64, al
 
-    call    .wait_input
+    call    .wait_kbd
     pop     ax
     or      al, 2               ; Set A20 bit
     out     0x60, al
 
-    call    .wait_input
+    call    .wait_kbd
     mov     al, 0xAE            ; Enable keyboard
     out     0x64, al
 
-    call    .wait_input
+    call    .wait_kbd
 
 .done:
     ret
 
-.wait_input:
+.wait_kbd:
     in      al, 0x64
     test    al, 2
-    jnz     .wait_input
+    jnz     .wait_kbd
     ret
 
-.wait_output:
+.wait_kbd_data:
     in      al, 0x64
     test    al, 1
-    jz      .wait_output
+    jz      .wait_kbd_data
     ret
 
-; Verify A20 is enabled
 verify_a20:
-    push    ds
     push    es
+    push    ds
     push    di
     push    si
 
     xor     ax, ax
-    mov     ds, ax
-    mov     si, 0x0500
-
-    not     ax
     mov     es, ax
-    mov     di, 0x0510          ; 0xFFFF:0x0510 = 0x100500 if A20 enabled
+    mov     di, 0x0500
 
-    mov     al, [ds:si]
-    push    ax
-    mov     al, [es:di]
-    push    ax
+    mov     ax, 0xFFFF
+    mov     ds, ax
+    mov     si, 0x0510
 
-    mov     byte [ds:si], 0x00
-    mov     byte [es:di], 0xFF
+    mov     byte [es:di], 0x00
+    mov     byte [ds:si], 0xFF
 
-    cmp     byte [ds:si], 0xFF  ; If equal, A20 is disabled
-
-    pop     ax
-    mov     [es:di], al
-    pop     ax
-    mov     [ds:si], al
+    cmp     byte [es:di], 0xFF
+    je      .disabled
 
     pop     si
     pop     di
-    pop     es
     pop     ds
-
-    je      .disabled
+    pop     es
     clc
     ret
+
 .disabled:
+    pop     si
+    pop     di
+    pop     ds
+    pop     es
     stc
     ret
 
 ; ============================================================================
-; VESA Setup - Get 800x600x32 or 640x480x32, or fall back to VGA text
+; VESA Setup
 ; ============================================================================
 
 VESA_INFO       equ 0x2000      ; VBE info block
@@ -436,6 +433,11 @@ do_load_kernel:
     push    es
     push    bp
 
+    ; Reset disk before loading (important after VESA/A20 operations)
+    xor     ax, ax
+    mov     dl, [boot_drive]
+    int     0x13
+
     ; Set up for loading
     mov     word [sectors_left], KERNEL_SECTORS
     mov     word [current_lba], KERNEL_SECTOR
@@ -447,60 +449,65 @@ do_load_kernel:
     cmp     word [sectors_left], 0
     je      .done
 
-    ; Convert LBA to CHS
+    ; Convert LBA to CHS (using CX for division to avoid clobbering)
     mov     ax, [current_lba]
     xor     dx, dx
-    mov     bx, SECTORS_PER_TRACK
-    div     bx                      ; AX = track*heads + head, DX = sector-1
-    mov     cl, dl
-    inc     cl                      ; CL = sector (1-based)
+    mov     cx, SECTORS_PER_TRACK
+    div     cx                      ; AX = track*heads + head, DX = sector-1
+    push    dx                      ; Save sector-1 on stack
     xor     dx, dx
-    mov     bx, HEADS
-    div     bx                      ; AX = track, DX = head
+    mov     cx, HEADS
+    div     cx                      ; AX = cylinder, DX = head
     mov     ch, al                  ; CH = cylinder (low 8 bits)
     mov     dh, dl                  ; DH = head
+    pop     ax                      ; Get sector-1 back
+    inc     al
+    mov     cl, al                  ; CL = sector (1-based)
 
     ; Set up read destination
     mov     ax, [load_segment]
     mov     es, ax
     mov     bx, [load_offset]
 
-    mov     ah, 0x02                ; Read sectors
-    mov     al, 1                   ; One sector at a time (safe)
-    mov     dl, [boot_drive]
-
     ; Retry loop for flaky hardware
     mov     bp, 3
 .retry:
-    push    ax
-    push    bx
-    push    cx
+    push    bx                      ; Save destination
+    push    cx                      ; Save CHS
     push    dx
+    push    es
+
+    mov     ah, 0x02                ; Read sectors
+    mov     al, 1                   ; One sector at a time (safe)
+    mov     dl, [boot_drive]
     int     0x13
+
+    pop     es
     pop     dx
     pop     cx
     pop     bx
-    pop     ax
+
     jnc     .read_ok
 
+    ; Save error code for debugging
+    mov     [disk_error_code], ah
+
     ; Reset disk and retry
-    push    ax
     xor     ax, ax
+    mov     dl, [boot_drive]
     int     0x13
-    pop     ax
     dec     bp
     jnz     .retry
 
-    ; Failed after retries
+    ; Failed after retries - display error code
+    mov     al, [disk_error_code]
+    call    print_hex_byte
     jmp     .error
 
 .read_ok:
     ; Print a dot for progress
-    push    ax
-    mov     ah, 0x0E
-    mov     al, '.'
+    mov     ax, 0x0E2E
     int     0x10
-    pop     ax
 
     ; Update load address
     add     word [load_offset], 512
@@ -531,6 +538,7 @@ sectors_left:   dw 0
 current_lba:    dw 0
 load_segment:   dw 0
 load_offset:    dw 0
+disk_error_code: db 0
 
 ; ============================================================================
 ; Print String (16-bit)
@@ -547,6 +555,47 @@ print_string:
     jmp     .loop
 .done:
     popa
+    ret
+
+; Print AL as hex byte (for debugging)
+print_hex_byte:
+    pusha
+    mov     cl, al              ; Save byte
+
+    ; Print "Err:"
+    mov     ah, 0x0E
+    mov     al, 'E'
+    int     0x10
+    mov     al, 'r'
+    int     0x10
+    mov     al, 'r'
+    int     0x10
+    mov     al, ':'
+    int     0x10
+
+    ; Print high nibble
+    mov     al, cl
+    shr     al, 4
+    call    .print_nibble
+
+    ; Print low nibble
+    mov     al, cl
+    and     al, 0x0F
+    call    .print_nibble
+
+    popa
+    ret
+
+.print_nibble:
+    cmp     al, 10
+    jb      .digit
+    add     al, 'A' - 10
+    jmp     .out
+.digit:
+    add     al, '0'
+.out:
+    mov     ah, 0x0E
+    int     0x10
     ret
 
 ; ============================================================================
