@@ -304,3 +304,108 @@ write-usb: floppy
 	read dummy && \
 	sudo dd if=$(FLOPPY_IMG) of=/dev/$$DEVICE bs=512 && \
 	sync
+
+# Programs directory
+PROGRAMS_DIR = programs
+PROGRAMS_BUILD = $(BUILD_DIR)/programs
+
+# Programs floppy image
+PROGRAMS_IMG = $(BUILD_DIR)/Programs.img
+
+# List of programs to build (add more as needed)
+PROGRAMS = hello.bin
+
+# ============================================================================
+# Programs Target
+# ============================================================================
+
+.PHONY: programs programs-floppy
+
+programs: dirs $(addprefix $(PROGRAMS_BUILD)/, $(PROGRAMS))
+	@echo "Programs built successfully!"
+
+# Create programs directory
+$(PROGRAMS_BUILD):
+	@mkdir -p $(PROGRAMS_BUILD)
+
+# ============================================================================
+# Build Individual Programs
+# ============================================================================
+
+# Assembly programs (.asm -> .bin)
+$(PROGRAMS_BUILD)/%.bin: $(PROGRAMS_DIR)/%.asm | $(PROGRAMS_BUILD)
+	$(AS) -f bin -o $@ $<
+
+# C programs - compile and link
+# For C programs, we need a special link process
+$(PROGRAMS_BUILD)/%.o: $(PROGRAMS_DIR)/%.c | $(PROGRAMS_BUILD)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Link C program to flat binary
+# Note: This requires program.ld linker script in programs/
+$(PROGRAMS_BUILD)/%.bin: $(PROGRAMS_BUILD)/%.o $(PROGRAMS_DIR)/program.ld
+	$(LD) $(LDFLAGS_ARCH) -T $(PROGRAMS_DIR)/program.ld -o $@ $<
+
+# ============================================================================
+# Programs Floppy Image (FAT12)
+# ============================================================================
+
+programs-floppy: programs $(PROGRAMS_IMG)
+	@echo "Programs floppy created: $(PROGRAMS_IMG)"
+
+$(PROGRAMS_IMG): $(addprefix $(PROGRAMS_BUILD)/, $(PROGRAMS))
+	@echo "Creating FAT12 programs floppy..."
+	# Create blank 1.44MB image
+	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
+	# Format as FAT12 using mformat (from mtools)
+	mformat -i $@ -f 1440 ::
+	# Copy all programs to floppy
+	@for prog in $(PROGRAMS); do \
+		echo "  Copying $$prog..."; \
+		mcopy -i $@ $(PROGRAMS_BUILD)/$$prog ::/; \
+	done
+	# List contents
+	@echo "Programs floppy contents:"
+	@mdir -i $@ ::
+	@echo ""
+
+# ============================================================================
+# Alternative: Programs Floppy without mtools
+# ============================================================================
+#
+# If you don't have mtools, you can use this approach instead.
+# It creates a FAT12 image using a pre-made template or loopback mount.
+#
+# programs-floppy-loop: programs
+# 	dd if=/dev/zero of=$(PROGRAMS_IMG) bs=512 count=2880
+# 	mkfs.fat -F 12 $(PROGRAMS_IMG)
+# 	mkdir -p /tmp/rfos-mount
+# 	sudo mount -o loop $(PROGRAMS_IMG) /tmp/rfos-mount
+# 	sudo cp $(PROGRAMS_BUILD)/*.bin /tmp/rfos-mount/
+# 	sudo umount /tmp/rfos-mount
+# 	rmdir /tmp/rfos-mount
+
+# ============================================================================
+# Run with both floppies
+# ============================================================================
+
+run-dual: floppy programs-floppy
+	qemu-system-i386 \
+		-fda $(FLOPPY_IMG) \
+		-fdb $(PROGRAMS_IMG) \
+		-m 256M \
+		-cpu pentium3 \
+		-vga std \
+		-serial stdio
+
+# ============================================================================
+# Clean programs
+# ============================================================================
+
+clean-programs:
+	rm -rf $(PROGRAMS_BUILD)
+	rm -f $(PROGRAMS_IMG)
+
+# Add to main clean target:
+# clean: clean-programs
+#     rm -rf $(BUILD_DIR)

@@ -20,6 +20,7 @@ RUN mkdir -p output && \
     make clean && \
     make all && \
     make textmode && \
+    make programs && \
     cp build/boot.bin output/ && \
     cp build/stage2.bin output/ && \
     cp build/stage2-text.bin output/ && \
@@ -28,6 +29,7 @@ RUN mkdir -p output && \
     cp build/RetroFuture.img output/ && \
     cp build/RetroFuture.iso output/ && \
     cp build/RetroFuture-text.img output/ && \
-    cp build/RetroFuture-text.iso output/
+    cp build/RetroFuture-text.iso output/ && \
+    cp -r build/programs output/
 
 CMD ["ls", "-la", "output/"]

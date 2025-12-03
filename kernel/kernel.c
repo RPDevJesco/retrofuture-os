@@ -17,14 +17,14 @@
 #include "terminal.h"
 #include "idt.h"
 #include "keyboard.h"
+#include "mount_cmd.h"
 #include "ata.h"
-#include "fat12.h"
-#include "fat12_write.h"
 #include "ramdisk.h"
 #include "vfs.h"
 #include "fat12_vfs.h"
 #include "ata_blkdev.h"
 #include "shell.h"
+#include "program_shell.h"
 
 /* ============================================================================
  * Forward Declarations for Intrusive List
@@ -1330,6 +1330,10 @@ static shell_state_t g_shell;
 static void setup_kernel_shell(kernel_context_t *ctx) {
     shell_init(&g_shell, &g_shell_io, ctx);
 
+    /* Initialize program loader */
+    program_shell_init();
+    program_shell_register(&g_shell);
+
     /* Register kernel-specific commands */
     shell_register(&g_shell, "clear",   "Clear screen",              kcmd_clear,   0);
     shell_register(&g_shell, "info",    "System information",        kcmd_info,    0);
@@ -1428,6 +1432,15 @@ void kernel_main(boot_info_t *bi) {
     keyboard_init();
     keyboard_set_event_callback(fire_key_event);
     kprintf("\r  [ OK ] PS/2 keyboard\n");
+
+    /* Initialize floppy controller */
+    kprintf("  [....] Floppy controller");
+    mount_cmd_init();
+    if (mount_floppy_available()) {
+        kprintf("\r  [ OK ] Floppy controller\n");
+    } else {
+        kprintf("\r  [WARN] Floppy controller (not found)\n");
+    }
 
     /* Initialize ATA */
     kprintf("  [....] ATA controller");
